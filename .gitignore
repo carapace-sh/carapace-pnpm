@@ -1,0 +1,3 @@
+cmd/carapace-pnpm/carapace-pnpm
+dist
+profile.cov
