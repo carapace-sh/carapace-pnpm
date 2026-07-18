@@ -30,55 +30,78 @@ Entry point is `main.go` at `cmd/carapace-pnpm/`, which calls `cmd.Execute()`.
 
 ### Parser (`pkg/pnpm/`)
 
-- **`parser.go`** — Main parser. `Parse()` → `*Filter` AST with spans. Strict: rejects partial/invalid input (e.g. trailing commas, lone `!`, bare `...`).
-- **`completion_parser.go`** — Completion parser. `ParseForCompletion(input)` → `*CompletionContext` describing what tokens are valid at end of input. Tolerant: recovers from incomplete input to report expectations.
+- **`parser.go`** — Main parser. `Parse()` → `*Filter` AST with spans. Strict: rejects partial/invalid input (e.g. trailing commas, lone `!`, bare `...`, unterminated `{`/`[`). The parser strips relational modifiers from both ends of each selector body, then parses the remaining base as `name?{brace}?[diff]?` with a location fallback.
+- **`completion_parser.go`** — Completion parser. `ParseForCompletion(input)` → `*CompletionContext` describing what tokens are valid at end of input. Tolerant: recovers from incomplete input to report expectations. Uses the same end-stripping logic as the main parser but on the last selector only.
+- **`scanner.go`** — Shared character-class helpers (`isWhitespace`). The old per-token scanner methods were removed when the parser switched to whole-selector-body parsing.
+- **`ast.go`** — AST types: `Filter`, `Selector`, `SelectorKind`.
+- **`completion.go`** — Completion context types: `CompletionContext`, `ExpectedToken`, `ValidRelation`, `SelectorContext`.
 
-Both parsers implement the same grammar but independently. The completion parser mirrors the main parser's structure but stops at the cursor and records expectations instead of building a full AST.
+Both parsers implement the same grammar. The completion parser mirrors the main parser's relation-stripping logic but operates on the last (in-progress) selector and records expectations instead of building a full AST.
 
 ### The pnpm filter grammar
 
 ```
 filter    = selector ( "," selector )*
-selector  = [ "!" ] [ "..." ] base [ suffix ]
-base      = packageName | pathGlob | "." | ".."
-suffix    = "..."       (the package and its dependents)
-          | "^..."      (the package and its direct dependencies)
+selector  = "!"? prefix? base suffix?
+prefix    = "..." "^"?            (dependents; optional excludeSelf)
+suffix    = "^"? "..."            (dependencies; optional excludeSelf)
+base      = name? brace? diff?
+          | location
+name      = [^.] [^{}[\]]*        (package-name glob; may start with '@')
+brace     = "{" [^}]+ "}"         (directory selector; inner resolved vs prefix)
+diff      = "[" [^\]]+ "]"        (changed-packages selector; git ref)
+location  = "." | ".." | "./"… | "../"…
 ```
 
-The `...` prefix on a base (e.g. `...foo`) selects the package **and its dependencies** (transitive). The `...` suffix (e.g. `foo...`) selects the package **and its dependents**. The `^...` suffix (e.g. `foo^...`) selects the package **and its direct dependencies only**.
+The relational modifiers are **orthogonal booleans**, not a single enum — pnpm allows any combination:
 
-`!` negates a selector. Selectors are combined with `,` (union). Whitespace is allowed around commas but not within a selector base.
+| Form | IncludeDependents | IncludeDependencies | ExcludeSelf |
+|------|-------------------|---------------------|-------------|
+| `foo` | false | false | false |
+| `foo...` | false | true | false |
+| `foo^...` | false | true | true |
+| `...foo` | true | false | false |
+| `...^foo` | true | false | true |
+| `...foo...` | true | true | false |
+| `...^foo^...` | true | true | true |
+
+`!` negates a selector (subtracts matches from the selection). Selectors are combined with `,` (union). Whitespace is allowed around commas but not within a selector.
 
 ### Selector kinds
 
 | `Kind` | Matches |
 |--------|---------|
-| `PackageName` | A bare package name like `foo` or `@scope/bar` |
-| `PathGlob` | A filesystem path/glob like `./packages/*`, `../shared`, `{./apps/*}` |
-| `Self` | The `.` selector (the package in the current directory) |
-| `All` | A selector that effectively matches the whole workspace graph |
+| `PackageName` | A package name or name glob like `foo`, `@scope/bar`, `@pnpm.e2e/*` |
+| `Path` | A filesystem path like `./packages/*`, `../shared` |
+| `Self` | The `.` selector (current directory) |
+| `Parent` | The `..` selector (parent directory) |
+| `Brace` | A `{...}` directory selector — inner text resolved against the workspace prefix |
+| `Diff` | A `[ref]` changed-packages selector with no name/brace base |
+
+A selector can combine a name with a brace and a diff: `pattern{foo}[master]` has `Name=pattern`, `BraceInner=foo`, `Diff=master`.
 
 ### Relational modifiers
 
-| `Relation` | Form | Meaning |
-|------------|------|---------|
-| `RelNone` | (none) | Just the base package |
-| `RelDependents` | `pkg...` | The package and all packages that depend on it |
-| `RelDependencies` | `...pkg` | The package and all of its dependencies |
-| `RelDirectDependencies` | `pkg^...` | The package and its direct dependencies |
+The three orthogonal booleans on `Selector`:
+
+| Field | Set by | Meaning |
+|-------|--------|---------|
+| `IncludeDependents` | leading `...` | Also select packages that depend on the match |
+| `IncludeDependencies` | trailing `...` | Also select packages the match depends on |
+| `ExcludeSelf` | `^` adjacent to a `...` | Exclude the matched package itself, keeping only its relations |
 
 ### File responsibilities
 
 | File | Purpose |
 |------|---------|
 | `pkg/pnpm/span.go` | `Span` (Start/End byte offsets) and `Pos` types |
-| `pkg/pnpm/ast.go` | pnpm AST node types: `Filter`, `Selector`, `SelectorKind`, `RelKind` |
-| `pkg/pnpm/scanner.go` | Scanner methods (selector bases, relational prefixes/suffixes) for both parsers |
-| `pkg/pnpm/parser.go` | Main parser + public API: `Parse()` |
+| `pkg/pnpm/ast.go` | pnpm AST node types: `Filter`, `Selector`, `SelectorKind` |
+| `pkg/pnpm/scanner.go` | Shared character-class helpers (`isWhitespace`) |
+| `pkg/pnpm/parser.go` | Main parser + public API: `Parse()`, `parseSelectorBody`, `parseBase` |
 | `pkg/pnpm/completion.go` | Completion context types: `CompletionContext`, `ExpectedToken`, `ValidRelation`, `SelectorContext` |
 | `pkg/pnpm/completion_parser.go` | Completion parser: `ParseForCompletion()` |
-| `pkg/pnpm/parser_test.go` | Parser tests |
-| `pkg/pnpm/completion_test.go` | Completion parser tests |
+| `pkg/pnpm/parser_test.go` | Parser tests (derived from pnpm's parse_project_selector fixtures) |
+| `pkg/pnpm/completion_test.go` | Completion parser tests covering each grammar position |
 | `cmd/carapace-pnpm/main.go` | CLI entrypoint |
 | `cmd/carapace-pnpm/cmd/root.go` | Root cobra command |
 | `cmd/carapace-pnpm/cmd/filter.go` | Filter subcommands |
@@ -90,19 +113,27 @@ The `...` prefix on a base (e.g. `...foo`) selects the package **and its depende
 
 ### Two parsers must stay in sync
 
-When modifying the grammar in `parser.go` / `scanner.go`, the same changes must be mirrored in `completion_parser.go` (and the cursor-bounded scanner methods in `scanner.go`). They share the character-class helpers but have independent parser types.
+When modifying the grammar in `parser.go`, the same relation-stripping and base-parsing logic must be mirrored in `completion_parser.go`. They share the `isLocation`, `kindForLocation`, and `classifyPartialBase` helpers but have independent entry points (`Parse` vs `ParseForCompletion`).
 
-### Relational `...` is ambiguous without context
+### Relational modifiers are stripped from both ends
 
-`...` can be a prefix (`...pkg` = dependencies) or a suffix (`pkg...` = dependents). The scanner distinguishes by position: a `...` at the start of a selector (before any base character) and followed by a base-start character is a prefix; a `...` immediately after a base and followed by `,`/whitespace/EOF is a suffix. A bare `...` with no base is a syntax error.
+The parser does not scan relation tokens incrementally. Instead, `parseSelectorBody` takes the whole selector text, strips a trailing `...` (with optional preceding `^`), then strips a leading `...` (with optional following `^`), and what remains is the base. This handles all combinations including `...foo...` and `...^foo^...` uniformly. A bare `...` with no base is a syntax error.
 
-### Path globs contain `.` and `*`
+### `^` is a modifier, not a relation kind
 
-`./packages/*` and `{./apps/*}` are valid bases. The scanner must not mistake the leading `./` of a path for the `.` self-selector or a `...` suffix. The `scanSelectorBase` function handles this by checking the full `...` sequence and its surroundings before stopping.
+`^` does not select a different relation — it sets `ExcludeSelf=true` on whichever relation is active. It can appear adjacent to a leading `...` (`...^foo`) or a trailing `...` (`foo^...`) or both (`...^foo^...`). The parser records it as a boolean, not as a separate `RelKind`.
+
+### `[diff]` and `{brace}` are orthogonal to names and relations
+
+A selector base is `name?{brace}?[diff]?` — all three are optional and independent. `[master]` alone is a diff selector; `{foo}` alone is a brace selector; `pattern{foo}[master]` combines all three. Relations apply to the whole base: `[master]...` selects changed packages and their dependencies; `...{./foo}` selects dependents of the brace-matched directory.
+
+### Commas inside `{}` are part of the glob
+
+`{./apps/*,./packages/*}` is a single selector (one brace group), not two selectors. The `selectorRest` function tracks brace depth so top-level commas separate selectors while commas inside `{...}` stay part of the brace inner text. `!` is similarly allowed inside `{...}` for glob exclusion (`{./apps/*,!./apps/legacy}`).
 
 ### No whitespace within a selector
 
-`foo bar` is a syntax error. Whitespace is only allowed around `,`. Relational suffixes attach directly to the base with no space (`foo...`, not `foo ...`).
+`foo bar` is a syntax error. Whitespace is only allowed around `,`. Relational modifiers attach directly to the base with no space (`foo...`, not `foo ...`).
 
 ### The action layer is the I/O boundary
 

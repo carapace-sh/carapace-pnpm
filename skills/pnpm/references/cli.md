@@ -146,19 +146,60 @@ These flags apply to most commands. Command-specific flags live in each command'
 
 ## Filtering Syntax (`--filter`)
 
-`--filter` selects workspace packages for recursive operations. Common selectors:
+`--filter` selects workspace packages for recursive operations. A filter argument is a comma-separated list of selectors (union). Each selector has the form:
 
-| Selector | Matches |
-|-----------|---------|
-| `--filter <pkg-name>` | A package by its `name`. |
-| `--filter <pkg-name>...` | The package and all its dependents (the `...` suffix). |
-| `--filter ...<pkg-name>` | The package and all its dependencies (the `...` prefix). |
-| `--filter ./<glob>` | Packages whose directory matches the glob. |
-| `--filter "{./packages/**}"` | All packages under `packages/`. |
-| `--filter <name> --filter <name2>` | Union of multiple selectors. |
-| `--filter "!<name>"` | Exclude a package. |
+```
+selector  = "!"? prefix? base suffix?
+prefix    = "..." "^"?            (dependents; optional excludeSelf)
+suffix    = "^"? "..."            (dependencies; optional excludeSelf)
+base      = name? "{...}"? "[ref]"?
+          | location
+```
 
-`...` and `<...` are scoped to the workspace graph, not the filesystem. `--filter` implies recursive execution.
+### Base selectors
+
+| Selector | Kind | Matches |
+|----------|------|---------|
+| `foo` | name | A package by its `name` (supports globs: `@pnpm.e2e/*`) |
+| `@scope/bar` | name | A scoped package |
+| `./packages/*` | path | Packages whose directory matches the glob |
+| `../shared` | path | A relative path |
+| `.` | self | The package in the current directory |
+| `..` | parent | The package in the parent directory |
+| `{foo}` | brace | A directory selector resolved against the workspace prefix |
+| `{./apps/*,./packages/*}` | brace | A brace group (comma is part of the glob, not a separator) |
+| `[master]` | diff | Packages changed since the `master` ref |
+| `pattern{foo}` | name+brace | Name `pattern` in directory `foo` |
+| `pattern{foo}[master]` | name+brace+diff | Name `pattern` in dir `foo`, changed since `master` |
+
+### Relational modifiers
+
+The prefix `...`, suffix `...`, and `^` are **orthogonal** — any combination is valid:
+
+| Form | Dependents | Dependencies | ExcludeSelf |
+|------|------------|--------------|-------------|
+| `foo` | | | |
+| `foo...` | | ✓ | |
+| `foo^...` | | ✓ | ✓ |
+| `...foo` | ✓ | | |
+| `...^foo` | ✓ | | ✓ |
+| `...foo...` | ✓ | ✓ | |
+| `...^foo^...` | ✓ | ✓ | ✓ |
+
+- **`...` suffix** (`foo...`) — the package **and its dependencies** (packages `foo` depends on).
+- **`...` prefix** (`...foo`) — the package **and its dependents** (packages that depend on `foo`).
+- **`^` adjacent to `...`** — exclude the matched package itself, keeping only its relations.
+
+### Negation and combination
+
+| Form | Meaning |
+|------|---------|
+| `!foo` | Exclude `foo` from the selection |
+| `foo,bar` | Union of `foo` and `bar` |
+| `foo..., !bar` | Dependents of `foo`, excluding `bar` |
+| `!{./apps/legacy}` | Exclude the legacy app directory |
+
+`--filter` can be repeated (`--filter foo --filter bar`) or use comma-separated unions within one argument. `--filter` implies recursive execution.
 
 ## Exit Codes
 
