@@ -38,43 +38,61 @@ func TestCompletionAfterBaseExpectsRelationOrEnd(t *testing.T) {
 	}
 }
 
-func TestCompletionAfterDependentsSuffix(t *testing.T) {
+func TestCompletionAfterDependenciesSuffix(t *testing.T) {
 	ctx := ParseForCompletion("foo...")
 	if ctx.Selector == nil {
 		t.Fatalf("expected non-nil Selector")
 	}
+	if !ctx.Selector.IncludeDependencies {
+		t.Errorf("expected IncludeDependencies")
+	}
 	if !ctx.Selector.HasRelation {
 		t.Errorf("expected HasRelation")
 	}
-	if ctx.Selector.Relation != RelDependents {
-		t.Errorf("expected RelDependents, got %v", ctx.Selector.Relation)
-	}
-	// After a complete selector+suffix, a comma or new selector is valid.
 	if !hasExpected(ctx, ExpectedComma) {
-		t.Errorf("expected ExpectedComma, got %v", ctx.ExpectedTokens)
+		t.Errorf("expected ExpectedComma after complete suffix, got %v", ctx.ExpectedTokens)
 	}
 }
 
-func TestCompletionAfterDirectDependenciesSuffix(t *testing.T) {
-	ctx := ParseForCompletion("foo^...")
-	if ctx.Selector == nil {
-		t.Fatalf("expected non-nil Selector")
-	}
-	if ctx.Selector.Relation != RelDirectDependencies {
-		t.Errorf("expected RelDirectDependencies, got %v", ctx.Selector.Relation)
-	}
-}
-
-func TestCompletionDependenciesPrefix(t *testing.T) {
+func TestCompletionAfterDependentsPrefix(t *testing.T) {
 	ctx := ParseForCompletion("...foo")
 	if ctx.Selector == nil {
 		t.Fatalf("expected non-nil Selector")
 	}
-	if ctx.Selector.Relation != RelDependencies {
-		t.Errorf("expected RelDependencies, got %v", ctx.Selector.Relation)
+	if !ctx.Selector.IncludeDependents {
+		t.Errorf("expected IncludeDependents")
 	}
 	if ctx.Selector.PartialBase != "foo" {
 		t.Errorf("expected PartialBase foo, got %q", ctx.Selector.PartialBase)
+	}
+}
+
+func TestCompletionBothRelations(t *testing.T) {
+	ctx := ParseForCompletion("...foo...")
+	if ctx.Selector == nil {
+		t.Fatalf("expected non-nil Selector")
+	}
+	if !ctx.Selector.IncludeDependents || !ctx.Selector.IncludeDependencies {
+		t.Errorf("expected both relations, got dependents=%v deps=%v",
+			ctx.Selector.IncludeDependents, ctx.Selector.IncludeDependencies)
+	}
+}
+
+func TestCompletionExcludeSelfSuffix(t *testing.T) {
+	// foo^... → excludeSelf + includeDependencies
+	ctx := ParseForCompletion("foo^...")
+	if !ctx.Selector.ExcludeSelf || !ctx.Selector.IncludeDependencies {
+		t.Errorf("got excludeSelf=%v deps=%v, want true/true",
+			ctx.Selector.ExcludeSelf, ctx.Selector.IncludeDependencies)
+	}
+}
+
+func TestCompletionExcludeSelfPrefix(t *testing.T) {
+	// ...^foo → excludeSelf + includeDependents
+	ctx := ParseForCompletion("...^foo")
+	if !ctx.Selector.ExcludeSelf || !ctx.Selector.IncludeDependents {
+		t.Errorf("got excludeSelf=%v dependents=%v, want true/true",
+			ctx.Selector.ExcludeSelf, ctx.Selector.IncludeDependents)
 	}
 }
 
@@ -118,13 +136,13 @@ func TestCompletionBetweenSelectors(t *testing.T) {
 	}
 }
 
-func TestCompletionPathGlob(t *testing.T) {
+func TestCompletionPath(t *testing.T) {
 	ctx := ParseForCompletion("./packages/")
 	if ctx.Selector == nil {
 		t.Fatalf("expected non-nil Selector")
 	}
-	if ctx.Selector.Kind != KindPathGlob {
-		t.Errorf("expected KindPathGlob, got %v", ctx.Selector.Kind)
+	if ctx.Selector.Kind != KindPath {
+		t.Errorf("expected KindPath, got %v", ctx.Selector.Kind)
 	}
 }
 
@@ -135,6 +153,26 @@ func TestCompletionSelfSelector(t *testing.T) {
 	}
 	if ctx.Selector.Kind != KindSelf {
 		t.Errorf("expected KindSelf, got %v", ctx.Selector.Kind)
+	}
+}
+
+func TestCompletionDiffSelector(t *testing.T) {
+	ctx := ParseForCompletion("[master]")
+	if ctx.Selector == nil {
+		t.Fatalf("expected non-nil Selector")
+	}
+	if ctx.Selector.Kind != KindDiff {
+		t.Errorf("expected KindDiff, got %v", ctx.Selector.Kind)
+	}
+}
+
+func TestCompletionBraceSelector(t *testing.T) {
+	ctx := ParseForCompletion("{foo}")
+	if ctx.Selector == nil {
+		t.Fatalf("expected non-nil Selector")
+	}
+	if ctx.Selector.Kind != KindBrace {
+		t.Errorf("expected KindBrace, got %v", ctx.Selector.Kind)
 	}
 }
 
@@ -151,6 +189,11 @@ func TestCompletionAllExpectedTokensNonEmpty(t *testing.T) {
 		"./packages/*",
 		"@scope/bar",
 		".",
+		"foo,bar",
+		"...foo",
+		"...foo...",
+		"[master]",
+		"{foo}",
 	}
 	for _, c := range cases {
 		ctx := ParseForCompletion(c)

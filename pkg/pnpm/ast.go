@@ -6,27 +6,40 @@ import "encoding/json"
 type SelectorKind int
 
 const (
+	// KindUnset is the zero value, indicating the kind has not been determined.
+	// It is not a valid final kind.
+	KindUnset SelectorKind = iota
 	// KindPackageName is a selector by package name, e.g. "foo" or "@scope/bar".
-	KindPackageName SelectorKind = iota
-	// KindPathGlob is a filesystem-path selector, e.g. "./packages/*" or "{./apps/**}".
-	KindPathGlob
+	KindPackageName
+	// KindPath is a filesystem-path selector, e.g. "./packages/*" or "../shared".
+	KindPath
 	// KindSelf is the "." selector referring to the package in the current directory.
 	KindSelf
-	// KindAll is the "." selector with a dependents/dependencies suffix that
-	// effectively selects from the whole workspace graph.
-	KindAll
+	// KindParent is the ".." selector referring to the parent directory.
+	KindParent
+	// KindBrace is a "{...}" directory selector whose inner text is resolved
+	// against the workspace prefix, e.g. "{foo}" or "{./apps/*}".
+	KindBrace
+	// KindDiff is a "[ref]" changed-packages selector with no base.
+	KindDiff
 )
 
 func (k SelectorKind) String() string {
 	switch k {
+	case KindUnset:
+		return "Unset"
 	case KindPackageName:
 		return "PackageName"
-	case KindPathGlob:
-		return "PathGlob"
+	case KindPath:
+		return "Path"
 	case KindSelf:
 		return "Self"
-	case KindAll:
-		return "All"
+	case KindParent:
+		return "Parent"
+	case KindBrace:
+		return "Brace"
+	case KindDiff:
+		return "Diff"
 	}
 	return "Unknown"
 }
@@ -36,55 +49,65 @@ func (k SelectorKind) MarshalJSON() ([]byte, error) {
 	return json.Marshal(k.String())
 }
 
-// RelKind identifies the relational modifier of a selector.
-type RelKind int
-
-const (
-	// RelNone means no relational modifier — the selector matches just the base.
-	RelNone RelKind = iota
-	// RelDependents is the "pkg..." suffix: the base package and all packages
-	// that depend on it (directly or transitively).
-	RelDependents
-	// RelDependencies is the "...pkg" prefix: the base package and all of its
-	// dependencies (directly or transitively).
-	RelDependencies
-	// RelDirectDependencies is the "pkg^..." suffix: the base package and its
-	// direct dependencies only.
-	RelDirectDependencies
-)
-
-func (k RelKind) String() string {
-	switch k {
-	case RelNone:
-		return "None"
-	case RelDependents:
-		return "Dependents"
-	case RelDependencies:
-		return "Dependencies"
-	case RelDirectDependencies:
-		return "DirectDependencies"
-	}
-	return "Unknown"
-}
-
-// MarshalJSON renders RelKind as its name.
-func (k RelKind) MarshalJSON() ([]byte, error) {
-	return json.Marshal(k.String())
-}
-
-// Selector is a single filter selector: an optional negation, an optional
-// prefix relation ("..."), a base, and an optional suffix relation ("..." or
-// "^...").
+// Selector is a single filter selector. It mirrors pnpm's
+// parse_project_selector: an optional negation, optional prefix "..." and "^",
+// a base (name? brace? diff?), and an optional suffix "^" and "...".
+//
+// The relational and self-exclusion modifiers are orthogonal booleans, not a
+// single enum — pnpm allows any combination:
+//
+//   - "foo"            → none
+//   - "foo..."         → IncludeDependencies
+//   - "foo^..."        → IncludeDependencies + ExcludeSelf
+//   - "...foo"         → IncludeDependents
+//   - "...^foo"        → IncludeDependents + ExcludeSelf
+//   - "...foo..."      → IncludeDependents + IncludeDependencies
+//   - "...^foo^..."    → IncludeDependents + IncludeDependencies + ExcludeSelf
 type Selector struct {
-	Span    Span         `json:"span"`
-	Negated bool         `json:"negated"`
-	Kind    SelectorKind `json:"kind"`
-	Base    string       `json:"base"`
-	// Relation is the relational modifier: a prefix ("...pkg" => RelDependencies)
-	// or a suffix ("pkg..." => RelDependents, "pkg^..." => RelDirectDependencies).
-	Relation   RelKind `json:"relation"`
-	RelSpan    *Span   `json:"relSpan,omitempty"`
-	NegateSpan *Span   `json:"negateSpan,omitempty"`
+	Span Span `json:"span"`
+
+	// Negated is set by a leading "!" — the matched projects are subtracted
+	// from the selection rather than added.
+	Negated    bool  `json:"negated"`
+	NegateSpan *Span `json:"negateSpan,omitempty"`
+
+	// Kind classifies the base. KindDiff means the selector is a bare "[ref]"
+	// with no name/brace/path.
+	Kind SelectorKind `json:"kind"`
+
+	// Name is the package-name glob when Kind is KindPackageName, or the name
+	// prefix of a "name{brace}" form. Empty for pure path/brace/diff selectors.
+	Name     string `json:"name,omitempty"`
+	NameSpan *Span  `json:"nameSpan,omitempty"`
+
+	// BraceInner is the inner text of a "{...}" directory selector, resolved
+	// against the workspace prefix. Set for KindBrace and for the "name{brace}"
+	// combination. Empty when no braces are present.
+	BraceInner string `json:"braceInner,omitempty"`
+	BraceSpan  *Span  `json:"braceSpan,omitempty"`
+
+	// Diff is the inner text of a "[ref]" changed-packages selector — a git
+	// ref (branch, tag, commit) whose diff selects packages.
+	Diff     string `json:"diff,omitempty"`
+	DiffSpan *Span  `json:"diffSpan,omitempty"`
+
+	// Path is the raw location text for a KindPath selector (e.g. "./packages/*",
+	// "../shared"). Empty for name/brace/diff selectors.
+	Path     string `json:"path,omitempty"`
+	PathSpan *Span  `json:"pathSpan,omitempty"`
+
+	// Relational modifiers (orthogonal):
+	//   - IncludeDependents   — leading "..."  (select packages that depend on the match)
+	//   - IncludeDependencies — trailing "..." (select packages the match depends on)
+	//   - ExcludeSelf         — a "^" adjacent to a "..." (exclude the matched package itself)
+	IncludeDependents   bool `json:"includeDependents"`
+	IncludeDependencies bool `json:"includeDependencies"`
+	ExcludeSelf         bool `json:"excludeSelf"`
+
+	// Span of the prefix "..." (when IncludeDependents).
+	PrefixSpan *Span `json:"prefixSpan,omitempty"`
+	// Span of the suffix "..." (when IncludeDependencies).
+	SuffixSpan *Span `json:"suffixSpan,omitempty"`
 }
 
 // Filter is the top-level AST node: a comma-separated list of selectors.

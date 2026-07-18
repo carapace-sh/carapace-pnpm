@@ -2,193 +2,152 @@ package pnpm
 
 import (
 	"slices"
-	"unicode/utf8"
+	"strings"
 )
 
 // ParseForCompletion parses a partial pnpm filter selector string and returns
 // a CompletionContext describing what is expected at the end of the input.
 // Partial selectors are allowed — the parser recovers from incomplete input to
-// report what tokens would be valid at the cursor position.
+// report what tokens would be valid at the cursor position (end of input).
 func ParseForCompletion(input string) *CompletionContext {
-	cursor := len(input)
-	p := &compParser{
-		input:  input,
-		pos:    0,
-		cursor: cursor,
-		ctx:    &CompletionContext{},
+	ctx := &CompletionContext{}
+
+	// Find the last top-level selector (the one being completed). Split on
+	// top-level commas, respecting brace/bracket depth.
+	last := lastSelector(input)
+	if last == "" {
+		ctx.ExpectedTokens = append(ctx.ExpectedTokens, ExpectedSelector)
+		ctx.AtNewSelector = true
+		return ctx
 	}
-	p.skipWS()
-	p.parseFilter()
-	if len(p.ctx.ExpectedTokens) == 0 {
-		p.ctx.ExpectedTokens = append(p.ctx.ExpectedTokens, ExpectedSelector)
-	}
-	p.ctx.ExpectedTokens = dedupTokens(p.ctx.ExpectedTokens)
-	p.ctx.ValidRelations = dedupRelations(p.ctx.ValidRelations)
-	return p.ctx
-}
 
-type compParser struct {
-	input  string
-	pos    int
-	cursor int
-	ctx    *CompletionContext
-
-	// consumed is true when at least one selector was fully or partially parsed.
-	consumed bool
-
-	// inSelector tracks whether the cursor is inside a selector (vs. between them).
-	inSelector bool
-}
-
-func (p *compParser) atCursorOrEnd() bool {
-	return p.pos >= len(p.input) || p.pos >= p.cursor
-}
-
-func (p *compParser) peek() rune {
-	if p.pos >= len(p.input) || p.pos >= p.cursor {
-		return 0
-	}
-	r, _ := utf8.DecodeRuneInString(p.input[p.pos:])
-	return r
-}
-
-func (p *compParser) advance() rune {
-	if p.pos >= len(p.input) || p.pos >= p.cursor {
-		return 0
-	}
-	r, w := utf8.DecodeRuneInString(p.input[p.pos:])
-	p.pos += w
-	p.consumed = true
-	return r
-}
-
-func (p *compParser) skipWS() {
-	for p.pos < len(p.input) && p.pos < p.cursor {
-		r, w := utf8.DecodeRuneInString(p.input[p.pos:])
-		if !isWhitespace(r) {
-			break
-		}
-		p.pos += w
-	}
-}
-
-func (p *compParser) matchString(s string) bool {
-	if p.pos+len(s) > len(p.input) || p.pos+len(s) > p.cursor {
-		return false
-	}
-	return p.input[p.pos:p.pos+len(s)] == s
-}
-
-func (p *compParser) parseFilter() {
-	for {
-		p.skipWS()
-		if p.atCursorOrEnd() {
-			// At the cursor: decide what's expected.
-			p.recordExpectation()
-			return
-		}
-		p.parseSelector()
-		p.skipWS()
-		if p.atCursorOrEnd() {
-			// Just finished a selector and landed on the cursor (after whitespace).
-			p.ctx.ExpectedTokens = append(p.ctx.ExpectedTokens, ExpectedComma, ExpectedSelector)
-			p.ctx.AtNewSelector = true
-			return
-		}
-		if p.peek() == ',' {
-			p.advance() // consume comma
-			continue
-		}
-		// Unexpected token; record and stop.
-		p.recordExpectation()
-		return
-	}
-}
-
-func (p *compParser) parseSelector() {
 	selCtx := &SelectorContext{}
-	p.inSelector = true
-	defer func() {
-		p.ctx.Selector = selCtx
-	}()
+	ctx.Selector = selCtx
 
-	p.skipWS()
-	if p.atCursorOrEnd() {
-		// Cursor right at the start of a selector.
-		p.ctx.ExpectedTokens = append(p.ctx.ExpectedTokens, ExpectedSelector)
-		p.ctx.AtNewSelector = true
-		return
-	}
+	// Determine whether anything was typed before this selector (a comma or
+	// other content). If so, the cursor is not at a "new selector" position
+	// in the sense of the very start — but the in-progress selector is new.
+	trimmed := strings.TrimRight(strings.TrimRight(input, " \t\r\n"), ",")
+	ctx.AtNewSelector = last == input || strings.HasSuffix(trimmed, ",")
+
+	body := last
 
 	// Negation.
-	if p.peek() == '!' {
+	if strings.HasPrefix(body, "!") {
 		selCtx.Negated = true
-		p.advance()
-		p.skipWS()
-		if p.atCursorOrEnd() {
-			// Cursor right after "!" — expect a selector base.
-			p.ctx.ExpectedTokens = append(p.ctx.ExpectedTokens, ExpectedSelector)
-			p.ctx.PartialNegation = true
-			return
+		body = body[1:]
+		if body == "" {
+			ctx.ExpectedTokens = append(ctx.ExpectedTokens, ExpectedSelector)
+			ctx.PartialNegation = true
+			ctx.AtNewSelector = true
+			return ctx
 		}
 	}
 
-	// Prefix relation: "...pkg".
-	if ok, _ := p.scanRelationPrefixCursor(); ok {
+	// Strip trailing "..." (dependencies) and optional preceding "^".
+	if strings.HasSuffix(body, "...") {
+		selCtx.IncludeDependencies = true
 		selCtx.HasRelation = true
-		selCtx.Relation = RelDependencies
-	}
-
-	// Base.
-	base, ok := p.scanSelectorBaseCursor()
-	if !ok {
-		if p.atCursorOrEnd() {
-			p.ctx.ExpectedTokens = append(p.ctx.ExpectedTokens, ExpectedSelector)
-			return
+		body = body[:len(body)-3]
+		if strings.HasSuffix(body, "^") {
+			selCtx.ExcludeSelf = true
+			body = body[:len(body)-1]
 		}
-		// Some other character; record selector expectation and stop.
-		p.ctx.ExpectedTokens = append(p.ctx.ExpectedTokens, ExpectedSelector)
-		return
-	}
-	selCtx.PartialBase = base
-	selCtx.Kind = classifyBase(base)
-	p.consumed = true
-
-	if p.atCursorOrEnd() {
-		// Cursor right after the base — a relational suffix or end is valid.
-		p.ctx.ExpectedTokens = append(p.ctx.ExpectedTokens, ExpectedRelationOrEnd)
-		p.ctx.ValidRelations = append(p.ctx.ValidRelations,
-			ValidRelation{Op: "...", Description: "the package and its dependents"},
-			ValidRelation{Op: "^...", Description: "the package and its direct dependencies"},
-		)
-		return
 	}
 
-	// Relational suffix.
-	rel, _ := p.scanRelationalSuffixCursor()
-	if rel != RelNone {
+	// Strip leading "..." (dependents) and optional following "^".
+	if strings.HasPrefix(body, "...") {
+		selCtx.IncludeDependents = true
 		selCtx.HasRelation = true
-		selCtx.Relation = rel
-		p.consumed = true
+		body = body[3:]
+		if strings.HasPrefix(body, "^") {
+			selCtx.ExcludeSelf = true
+			body = body[1:]
+		}
 	}
-	if p.atCursorOrEnd() {
-		// Cursor right after a (possibly partial) suffix — expect comma or end.
-		p.ctx.ExpectedTokens = append(p.ctx.ExpectedTokens, ExpectedComma, ExpectedSelector)
-		p.ctx.AtNewSelector = true
-		return
+
+	// body is now the base (possibly partial). If empty, the user typed only
+	// relations so far — but that's not a valid selector on its own unless
+	// it's a bare "[ref]" or "." etc. Expect a base.
+	selCtx.PartialBase = body
+	selCtx.Kind = classifyPartialBase(body)
+
+	// If the base is empty after stripping relations, expect a selector.
+	if body == "" {
+		ctx.ExpectedTokens = append(ctx.ExpectedTokens, ExpectedSelector)
+		ctx.AtNewSelector = true
+		return ctx
 	}
+
+	// If relations were already consumed (suffix present), the selector is
+	// complete — a comma or end is valid.
+	if selCtx.IncludeDependencies {
+		ctx.ExpectedTokens = append(ctx.ExpectedTokens, ExpectedComma, ExpectedSelector)
+		ctx.AtNewSelector = true
+		return ctx
+	}
+
+	// Base present, no trailing relation yet — a relation or end is valid.
+	ctx.ExpectedTokens = append(ctx.ExpectedTokens, ExpectedRelationOrEnd)
+	ctx.ValidRelations = append(ctx.ValidRelations,
+		ValidRelation{Op: "...", Description: "the package and its dependencies"},
+		ValidRelation{Op: "^...", Description: "the package's dependencies, excluding itself"},
+	)
+
+	ctx.ExpectedTokens = dedupTokens(ctx.ExpectedTokens)
+	ctx.ValidRelations = dedupRelations(ctx.ValidRelations)
+	return ctx
 }
 
-// recordExpectation records the appropriate expected token at the cursor.
-func (p *compParser) recordExpectation() {
-	if !p.consumed {
-		p.ctx.ExpectedTokens = append(p.ctx.ExpectedTokens, ExpectedSelector)
-		p.ctx.AtNewSelector = true
-		return
+// lastSelector returns the text of the final top-level selector in the input
+// (the one in progress at the cursor). Returns "" if the input is empty or
+// only whitespace/commas.
+func lastSelector(input string) string {
+	// Walk the input tracking brace/bracket depth; split on top-level commas.
+	depth := 0
+	lastStart := 0
+	for i := 0; i < len(input); i++ {
+		r := input[i]
+		switch r {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				lastStart = i + 1
+			}
+		}
 	}
-	// After at least one selector, the cursor can take a comma + new selector.
-	p.ctx.ExpectedTokens = append(p.ctx.ExpectedTokens, ExpectedComma, ExpectedSelector)
-	p.ctx.AtNewSelector = true
+	s := input[lastStart:]
+	// Trim leading whitespace.
+	s = strings.TrimLeft(s, " \t\r\n")
+	return s
+}
+
+// classifyPartialBase classifies the (partial) base text for completion.
+func classifyPartialBase(s string) SelectorKind {
+	if s == "" {
+		return 0
+	}
+	if s == "." {
+		return KindSelf
+	}
+	if s == ".." {
+		return KindParent
+	}
+	if isLocation(s) {
+		return KindPath
+	}
+	if strings.HasPrefix(s, "{") {
+		return KindBrace
+	}
+	if strings.HasPrefix(s, "[") {
+		return KindDiff
+	}
+	return KindPackageName
 }
 
 // --- dedup helpers ---
