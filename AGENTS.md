@@ -135,9 +135,14 @@ A selector base is `name?{brace}?[diff]?` — all three are optional and indepen
 
 `foo bar` is a syntax error. Whitespace is only allowed around `,`. Relational modifiers attach directly to the base with no space (`foo...`, not `foo ...`).
 
-### The action layer is the I/O boundary
+### The action layer shells out to pnpm for dynamic values
 
-`pkg/pnpm/` is pure stdlib (no I/O, no carapace dependency). All carapace integration and any workspace introspection (reading `pnpm-workspace.yaml` to list package names) belongs in `pkg/actions/tools/pnpm/`. `ActionWorkspacePackages()` is currently a stub that callers fill in.
+`pkg/pnpm/` is pure stdlib (no I/O, no carapace dependency). The action layer (`pkg/actions/tools/pnpm/`) shells out to `pnpm list --json -r --depth -1` to discover workspace packages at completion time:
+
+- `ActionWorkspacePackages()` — completes package names with version descriptions.
+- `ActionWorkspacePaths()` — completes `./`-prefixed relative paths with package-name descriptions.
+
+Both use `carapace.ActionExecCommandE` and fall back to an empty action (not an error) when pnpm is unavailable or not in a workspace, so the static selector bases (`.`, `{./`, `[`) still work. The exec output is a JSON array of `{name, version, path, private}`.
 
 ## Testing
 

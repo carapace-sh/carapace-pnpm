@@ -7,6 +7,10 @@ import (
 	"github.com/carapace-sh/carapace/pkg/sandbox"
 )
 
+// The sandbox runs in a temp dir with no pnpm workspace, so
+// ActionWorkspacePackages and ActionWorkspacePaths return an error/empty
+// action. The tests below assert only the static selector bases.
+
 func TestActionFiltersEmpty(t *testing.T) {
 	sandbox.Action(t, func() carapace.Action {
 		return ActionFilters()
@@ -17,7 +21,6 @@ func TestActionFiltersEmpty(t *testing.T) {
 					".", "the package in the current directory",
 				).Tag("self"),
 				carapace.ActionValuesDescribed(
-					"./", "packages matching a path glob",
 					"{./", "glob group, e.g. {./apps/*,./packages/*}",
 					"[", "packages changed since a git ref, e.g. [master]",
 				).NoSpace().Tag("path glob"),
@@ -49,7 +52,6 @@ func TestActionFiltersAfterCommaExpectsSelector(t *testing.T) {
 					".", "the package in the current directory",
 				).Tag("self"),
 				carapace.ActionValuesDescribed(
-					"./", "packages matching a path glob",
 					"{./", "glob group, e.g. {./apps/*,./packages/*}",
 					"[", "packages changed since a git ref, e.g. [master]",
 				).NoSpace().Tag("path glob"),
