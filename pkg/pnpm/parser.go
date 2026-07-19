@@ -286,8 +286,8 @@ func parseBase(s string, b *selectorBody, offset int) error {
 	// Brace: {inner}
 	if strings.HasPrefix(rest, "{") {
 		closeIdx := strings.IndexByte(rest, '}')
-		if closeIdx < 1 {
-			return &ParseError{Message: "unterminated '{' in selector", Span: Span{Start: offset + nameEnd, End: offset + nameEnd + 1}}
+		if closeIdx <= 1 {
+			return &ParseError{Message: "unterminated or empty '{' in selector", Span: Span{Start: offset + nameEnd, End: offset + nameEnd + 1}}
 		}
 		b.braceInner = rest[1:closeIdx]
 		b.braceSpan = &Span{Start: offset + nameEnd, End: offset + nameEnd + closeIdx + 1}
@@ -300,9 +300,9 @@ func parseBase(s string, b *selectorBody, offset int) error {
 	// Diff: [ref]
 	if strings.HasPrefix(rest, "[") {
 		closeIdx := strings.IndexByte(rest, ']')
-		if closeIdx < 1 {
+		if closeIdx <= 1 {
 			braceLen := lenBrace(b)
-			return &ParseError{Message: "unterminated '[' in selector", Span: Span{Start: offset + nameEnd + braceLen, End: offset + nameEnd + braceLen + 1}}
+			return &ParseError{Message: "unterminated or empty '[' in selector", Span: Span{Start: offset + nameEnd + braceLen, End: offset + nameEnd + braceLen + 1}}
 		}
 		b.diff = rest[1:closeIdx]
 		diffStart := offset + nameEnd + lenBrace(b)

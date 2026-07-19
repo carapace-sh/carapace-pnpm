@@ -7,15 +7,40 @@ import (
 )
 
 var parseSuccessCases = []string{
+	// Names
 	"foo",
 	"@scope/bar",
+	// Locations
 	".",
+	"..",
 	"./packages/*",
+	"../shared",
+	// Relational modifiers (all combinations)
 	"foo...",
+	"...foo",
+	"...foo...",
 	"foo^...",
+	"...^foo",
+	"...^foo^...",
+	// Negation
 	"!foo",
+	"!foo...",
+	// Diff selectors
+	"[master]",
+	"[master]...",
+	"...[master]",
+	"...[master]...",
+	// Brace selectors
+	"{foo}",
+	"{./apps/*,./packages/*}",
+	"...{./foo}",
+	// Combinations
+	"pattern{foo}[master]",
+	"{foo}[master]",
+	// Multiple selectors
 	"foo,bar",
 	"./packages/app...,./packages/widget",
+	"foo..., !bar",
 }
 
 func TestParseAllSuccessCases(t *testing.T) {
@@ -32,6 +57,9 @@ var completionTestCases = []string{
 	"foo",
 	"foo...",
 	"foo^...",
+	"...foo",
+	"...foo...",
+	"...^foo",
 	"!",
 	"!foo",
 	"foo,",
@@ -39,7 +67,10 @@ var completionTestCases = []string{
 	"./packages/*",
 	"@scope/bar",
 	".",
+	"..",
 	"foo,bar",
+	"[master]",
+	"{foo}",
 }
 
 func TestCompletionAllCases(t *testing.T) {
