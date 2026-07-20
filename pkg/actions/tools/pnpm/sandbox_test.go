@@ -8,8 +8,8 @@ import (
 )
 
 // The sandbox runs in a temp dir with no pnpm workspace, so
-// ActionWorkspacePackages and ActionWorkspacePaths return an error/empty
-// action. The tests below assert only the static selector bases.
+// ActionWorkspacePackages and ActionWorkspacePaths return an empty action.
+// The tests below assert only the static selector bases.
 
 func TestActionFiltersEmpty(t *testing.T) {
 	sandbox.Action(t, func() carapace.Action {
