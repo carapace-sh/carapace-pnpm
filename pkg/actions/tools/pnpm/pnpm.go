@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/carapace-sh/carapace"
+	"github.com/carapace-sh/carapace-bridge/pkg/actions/bridge"
 	pnpmlexer "github.com/carapace-sh/carapace-pnpm/pkg/pnpm"
 )
 
@@ -28,11 +29,12 @@ func ActionFilters() carapace.Action {
 		if ctx.Selector != nil && ctx.Selector.PartialBase != "" {
 			partial := ctx.Selector.PartialBase
 
-			// Inside a [ref] — complete git branches and tags.
+			// Inside a [ref] — complete git refs via the carapace-bin
+			// tools.git.Refs macro (bridged to avoid a direct dep).
 			if idx := strings.LastIndex(partial, "["); idx != -1 && !strings.Contains(partial[idx+1:], "]") {
 				prefix := value[:len(value)-len(partial)+idx+1]
 				c.Value = partial[idx+1:]
-				return actionGitRefs().Invoke(c).Prefix(prefix).Suffix("]").ToA().NoSpace()
+				return bridge.ActionMacro("carapace", "tools.git.Refs").Invoke(c).Prefix(prefix).Suffix("]").ToA().NoSpace()
 			}
 
 			// Inside a {dir} — complete directories.
@@ -111,65 +113,6 @@ func actionLexerFilters() carapace.Action {
 		}
 
 		return batch.ToA()
-	})
-}
-
-// actionGitRefs completes git branches and tags by shelling out to git
-// directly — no carapace-bin dependency needed.
-//
-//	master (Add new feature)
-//	v0.0.1 (Release v0.0.1)
-func actionGitRefs() carapace.Action {
-	return carapace.ActionCallback(func(c carapace.Context) carapace.Action {
-		return carapace.Batch(
-			actionGitBranches(),
-			actionGitTags(),
-		).ToA().UidF(Uid("git-ref"))
-	})
-}
-
-// actionGitBranches completes local and remote branches with their last
-// commit message as the description.
-func actionGitBranches() carapace.Action {
-	return carapace.ActionExecCommandE("git", "branch", "--all", "--format=%(refname:short)%09%(contents:subject)")(func(output []byte, err error) carapace.Action {
-		if err != nil && len(output) == 0 {
-			return carapace.ActionValues()
-		}
-		vals := make([]string, 0)
-		for _, line := range strings.Split(string(output), "\n") {
-			if line == "" {
-				continue
-			}
-			fields := strings.SplitN(line, "\t", 2)
-			if len(fields) == 2 {
-				vals = append(vals, fields[0], fields[1])
-			} else if fields[0] != "" {
-				vals = append(vals, fields[0])
-			}
-		}
-		return carapace.ActionValuesDescribed(vals...).Tag("git branches")
-	})
-}
-
-// actionGitTags completes git tags with their last commit message.
-func actionGitTags() carapace.Action {
-	return carapace.ActionExecCommandE("git", "tag", "--format=%(refname:short)%09%(contents:subject)")(func(output []byte, err error) carapace.Action {
-		if err != nil && len(output) == 0 {
-			return carapace.ActionValues()
-		}
-		vals := make([]string, 0)
-		for _, line := range strings.Split(string(output), "\n") {
-			if line == "" {
-				continue
-			}
-			fields := strings.SplitN(line, "\t", 2)
-			if len(fields) == 2 {
-				vals = append(vals, fields[0], fields[1])
-			} else if fields[0] != "" {
-				vals = append(vals, fields[0])
-			}
-		}
-		return carapace.ActionValuesDescribed(vals...).Tag("git tags")
 	})
 }
 
