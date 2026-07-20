@@ -10,6 +10,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type workspaceYaml struct {
+	Packages []string `yaml:"packages"`
+}
+
 // ActionWorkspaceScripts completes scripts available across all workspace packages
 //
 //	build
@@ -59,22 +63,6 @@ func ActionWorkspaceScripts() carapace.Action {
 		}
 		return carapace.ActionValues(vals...).Tag("workspace scripts")
 	})
-}
-
-// ActionWorkspaceFilters completes common workspace filter patterns
-//
-//	...
-//	./packages/a
-func ActionWorkspaceFilters() carapace.Action {
-	return carapace.ActionValuesDescribed(
-		"...", "the package and its dependencies",
-		"^...", "the package's dependencies, excluding itself",
-		"*", "All packages",
-		"packages/*", "All packages in packages/",
-		"apps/*", "All packages in apps/",
-		"libs/*", "All packages in libs/",
-		"tools/*", "All packages in tools/",
-	).Tag("workspace filter patterns")
 }
 
 type location struct {
