@@ -3,9 +3,9 @@ module github.com/carapace-sh/carapace-pnpm
 go 1.26.2
 
 require (
-	github.com/carapace-sh/carapace v1.13.2
+	github.com/carapace-sh/carapace v1.15.3
 	github.com/carapace-sh/carapace-bridge v1.6.2
-	github.com/carapace-sh/carapace-spec v1.8.0
+	github.com/carapace-sh/carapace-spec v1.8.1
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 )
